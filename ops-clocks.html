@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MinRes Air — Ops Room Clocks</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  /* ============================================================
+     Schematic / drafting-sheet theme: ink background, hairline
+     rules, mono data, a single amber signal colour, no gradients
+     (bar the ruler strip), no shadows, no rounded corners.
+     A "paper" (light) inversion is provided for prefers-color-scheme,
+     but the board is authored to run in ink mode on the ops TV.
+     ============================================================ */
+  :root {
+    --ink:      #101216;
+    --panel:    #16181d;
+    --paper:    #F4F3EF;
+    --body:     #B9BEC6;
+    --muted:    #7C8390;
+    --faint:    #565C67;
+    --signal:       #E8A33D;
+    --signal-strong:#F0B45E;
+    --secure:   #4FAE79;
+    --rule:         rgba(244,243,239,0.12);
+    --rule-strong:  rgba(244,243,239,0.22);
+    --edge:         rgba(244,243,239,0.34);
+    --font-sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-mono: 'IBM Plex Mono', "SF Mono", Consolas, Menlo, monospace;
+  }
+
+  /* Paper (light) inversion — used only if the viewer's OS/browser
+     is explicitly in light mode and no data-theme override forces
+     dark. The TV itself should just use the default ink tokens. */
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --ink:    #F4F3EF;
+      --panel:  #FFFFFF;
+      --paper:  #14161A;
+      --body:   #4C535B;
+      --muted:  #6C737B;
+      --faint:  #8A9098;
+      --signal:        #8A5A08;
+      --signal-strong: #B4780F;
+      --secure: #2E7D4F;
+      --rule:        rgba(20,22,26,0.12);
+      --rule-strong: rgba(20,22,26,0.22);
+      --edge:        rgba(20,22,26,0.34);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink: #101216; --panel: #16181d; --paper: #F4F3EF;
+    --body: #B9BEC6; --muted: #7C8390; --faint: #565C67;
+    --signal: #E8A33D; --signal-strong: #F0B45E; --secure: #4FAE79;
+    --rule: rgba(244,243,239,0.12); --rule-strong: rgba(244,243,239,0.22); --edge: rgba(244,243,239,0.34);
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--ink);
+    color: var(--paper);
+    font-family: var(--font-sans);
+    overflow: hidden; /* fixed TV dashboard, not a scrolling page */
+  }
+
+  .page {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    width: 100vw;
+    padding: clamp(14px, 2.2vh, 30px) clamp(18px, 2.4vw, 34px);
+  }
+
+  /* ---------- Ruler strip: the one permitted gradient ---------- */
+  .ruler {
+    height: 4px;
+    background: repeating-linear-gradient(90deg, var(--rule-strong) 0 1px, transparent 1px 22px);
+    flex-shrink: 0;
+  }
+  .kicker {
+    font-family: var(--font-mono);
+    font-size: clamp(9px, 0.8vw, 11px);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--faint);
+    padding: 6px 2px 14px;
+    display: flex;
+    justify-content: space-between;
+    flex-shrink: 0;
+  }
+  .kicker .status {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--secure);
+  }
+  .status .dot {
+    width: 7px; height: 7px;
+    background: var(--secure);
+    display: inline-block;
+    flex-shrink: 0;
+  }
+
+  header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: 0 2px 16px;
+    border-bottom: 1px solid var(--rule-strong);
+    margin-bottom: clamp(12px, 1.8vh, 22px);
+    flex-shrink: 0;
+  }
+  header h1 {
+    margin: 0;
+    font-weight: 600;
+    font-size: clamp(18px, 1.9vw, 26px);
+    letter-spacing: -0.01em;
+    color: var(--paper);
+  }
+  header h1 .dim { color: var(--muted); font-weight: 500; }
+  header .date-master {
+    font-family: var(--font-mono);
+    font-size: clamp(11px, 1vw, 14px);
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .clock-grid {
+    flex: 1;
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    grid-template-rows: repeat(2, 1fr);
+    gap: clamp(12px, 1.6vw, 22px);
+    min-height: 0;
+  }
+
+  /* ---------- Crop-mark frame ---------- */
+  .clock-card {
+    position: relative;
+    border: 1px solid var(--rule-strong);
+    border-radius: 0; /* square corners only, per the schematic idiom */
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 1.4vh 1.4vw;
+    min-width: 0;
+    min-height: 0;
+  }
+  /* Corner ticks drawn as small L-brackets outside the hairline
+     border — the drafting-sheet "crop mark" motif, always resolved
+     (not hover-only, since this board has no pointer most of the time). */
+  .clock-card::before,
+  .clock-card::after,
+  .clock-card .tick-br,
+  .clock-card .tick-bl {
+    content: "";
+    position: absolute;
+    width: 14px; height: 14px;
+    pointer-events: none;
+  }
+  .clock-card::before { top: -1px; left: -1px; border-top: 2px solid var(--signal); border-left: 2px solid var(--signal); }
+  .clock-card::after   { top: -1px; right: -1px; border-top: 2px solid var(--signal); border-right: 2px solid var(--signal); }
+  .clock-card .tick-br { bottom: -1px; right: -1px; border-bottom: 2px solid var(--signal); border-right: 2px solid var(--signal); }
+  .clock-card .tick-bl { bottom: -1px; left: -1px; border-bottom: 2px solid var(--signal); border-left: 2px solid var(--signal); }
+
+  .card-head {
+    position: absolute;
+    top: 14px; left: 18px; right: 18px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-family: var(--font-mono);
+    font-size: clamp(9px, 0.85vw, 11px);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--signal);
+  }
+
+  .label-input {
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    font-family: var(--font-sans);
+    font-size: clamp(13px, 1.9vw, 22px);
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    text-align: center;
+    width: 92%;
+    padding: 4px 2px;
+    border-bottom: 1px solid transparent;
+    margin-top: 6px;
+  }
+  .label-input:hover,
+  .label-input:focus {
+    border-bottom: 1px solid var(--rule-strong);
+    outline: none;
+    color: var(--paper);
+  }
+
+  .clock-time {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    font-size: clamp(38px, 7.6vw, 104px);
+    line-height: 1.05;
+    letter-spacing: 0.01em;
+    font-variant-numeric: tabular-nums;
+    color: var(--paper);
+    white-space: nowrap;
+    margin-top: 0.15em;
+  }
+  .clock-time .secs { color: var(--signal); }
+
+  .clock-sub {
+    display: flex;
+    align-items: center;
+    gap: 1em;
+    margin-top: 0.5em;
+    font-family: var(--font-mono);
+    font-size: clamp(11px, 1.2vw, 15px);
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.03em;
+  }
+
+  .offset-wrap { display: flex; align-items: center; gap: 0.5em; }
+  .offset-wrap label {
+    font-size: 0.82em;
+    letter-spacing: 0.1em;
+    color: var(--faint);
+  }
+  .offset-input {
+    width: 4.4em;
+    background: transparent;
+    border: 1px solid var(--rule-strong);
+    border-radius: 0;
+    color: var(--signal);
+    font-family: var(--font-mono);
+    font-size: 1em;
+    text-align: center;
+    padding: 3px 4px;
+  }
+  .offset-input:focus { outline: 2px solid var(--signal); outline-offset: 1px; }
+
+  .clock-date {
+    margin-top: 0.6em;
+    font-family: var(--font-mono);
+    font-size: clamp(10px, 1vw, 13px);
+    color: var(--faint);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  footer {
+    flex-shrink: 0;
+    display: flex;
+    justify-content: space-between;
+    padding-top: 14px;
+    margin-top: clamp(10px, 1.4vh, 18px);
+    border-top: 1px solid var(--rule-strong);
+    font-family: var(--font-mono);
+    font-size: clamp(9px, 0.8vw, 11px);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+
+  /* Fade the offset control out when idle so the board reads clean
+     from across the room; any input restores it instantly. Labels
+     stay visible permanently — they're part of the display, not an
+     editing affordance. */
+  body.idle .offset-wrap { opacity: 0; pointer-events: none; }
+  .offset-wrap { transition: opacity 0.6s ease; }
+
+</style>
+</head>
+<body>
+
+<div class="page">
+  <div class="ruler"></div>
+  <div class="kicker">
+    <span>Reference board · four time zones · updated every second</span>
+    <span class="status"><span class="dot"></span>Synced to system clock</span>
+  </div>
+
+  <header>
+    <h1>MinRes <span class="dim">Air</span> — Operations Room</h1>
+    <div class="date-master" id="masterDate">—</div>
+  </header>
+
+  <div class="clock-grid" id="clockGrid">
+    <!-- Clock cards are generated by JS below -->
+  </div>
+
+  <footer>
+    <span>Fig. 01–04 · time zone reference</span>
+    <span>Click a label or offset to edit · saved on this screen</span>
+  </footer>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  /**
+   * Default configuration for the four clocks.
+   * offset is in HOURS relative to UTC and may be fractional
+   * (e.g. 5.5 for India, 8.75 for Central Western Time).
+   */
+  var DEFAULTS = [
+    { label: "Perth (Local)", offset: 8 },
+    { label: "UTC / Zulu",    offset: 0 },
+    { label: "Singapore",     offset: 8 },
+    { label: "London",        offset: 1 }
+  ];
+
+  var STORAGE_KEY = "minres-ops-clocks-config-v1";
+
+  /**
+   * Load saved clock configuration from localStorage, falling back
+   * to DEFAULTS if nothing is stored yet or storage is unavailable
+   * (e.g. private browsing). Wrapped in try/catch — this page must
+   * never break just because storage misbehaves.
+   */
+  function loadConfig() {
+    try {
+      var raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return DEFAULTS.slice();
+      var parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed) || parsed.length !== 4) return DEFAULTS.slice();
+      return parsed;
+    } catch (e) {
+      return DEFAULTS.slice();
+    }
+  }
+
+  /**
+   * Persist the current clock configuration to localStorage.
+   * Silently no-ops on failure — this is a convenience, not a
+   * critical feature, so a storage error should never interrupt
+   * the display.
+   */
+  function saveConfig(config) {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+    } catch (e) {
+      /* ignore — storage may be unavailable on this device/browser */
+    }
+  }
+
+  var config = loadConfig();
+  var grid = document.getElementById("clockGrid");
+  var masterDateEl = document.getElementById("masterDate");
+
+  // Build the four clock cards once, then update their contents every tick.
+  var cardRefs = [];
+
+  config.forEach(function (clockConfig, index) {
+    var fig = "FIG. 0" + (index + 1);
+
+    var card = document.createElement("div");
+    card.className = "clock-card";
+    card.innerHTML =
+      '<span class="tick-br"></span><span class="tick-bl"></span>' +
+      '<div class="card-head"><span>' + fig + '</span><span class="clock-tz"></span></div>' +
+      '<input class="label-input" type="text" maxlength="24" value="" spellcheck="false" aria-label="Clock label">' +
+      '<div class="clock-time"><span class="hms"></span></div>' +
+      '<div class="clock-sub">' +
+        '<span class="offset-wrap">' +
+          '<label>UTC</label>' +
+          '<input class="offset-input" type="text" inputmode="decimal" aria-label="UTC offset in hours">' +
+        '</span>' +
+      '</div>' +
+      '<div class="clock-date"></div>';
+    grid.appendChild(card);
+
+    var labelInput = card.querySelector(".label-input");
+    var offsetInput = card.querySelector(".offset-input");
+
+    labelInput.value = clockConfig.label;
+    offsetInput.value = formatOffsetForInput(clockConfig.offset);
+
+    /**
+     * When the operator edits a label, store it immediately.
+     */
+    labelInput.addEventListener("input", function () {
+      config[index].label = labelInput.value;
+      saveConfig(config);
+    });
+
+    /**
+     * When the operator edits the UTC offset, parse it as a float
+     * (supports negative and fractional values like -3.5). Invalid
+     * or empty input is ignored until a valid number is entered, so
+     * the clock simply keeps its last good offset in the meantime.
+     */
+    offsetInput.addEventListener("change", function () {
+      var value = parseFloat(offsetInput.value);
+      if (!isNaN(value) && value >= -12 && value <= 14) {
+        config[index].offset = value;
+        saveConfig(config);
+      }
+      // Re-render the field in a clean canonical form either way.
+      offsetInput.value = formatOffsetForInput(config[index].offset);
+    });
+
+    cardRefs.push({
+      hms: card.querySelector(".hms"),
+      tz: card.querySelector(".clock-tz"),
+      dateEl: card.querySelector(".clock-date"),
+      offsetInput: offsetInput
+    });
+  });
+
+  /**
+   * Format a numeric UTC offset (in hours) as a short display string,
+   * e.g. 8 -> "+8", -3.5 -> "-3.5", 0 -> "+0".
+   */
+  function formatOffsetForInput(offset) {
+    var sign = offset >= 0 ? "+" : "";
+    // Trim trailing ".0" but keep genuine fractional offsets (e.g. 5.5).
+    var rounded = Math.round(offset * 100) / 100;
+    return sign + rounded;
+  }
+
+  function pad(n) { return String(n).padStart(2, "0"); }
+
+  var WEEKDAYS = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+  var MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+  /**
+   * Compute Y/M/D/H/M/S for a given UTC-offset (in hours) applied to
+   * "now". We work from Date.now() (which is UTC-based epoch millis)
+   * so this is independent of the viewing device's own timezone
+   * setting — only the system clock's accuracy matters, exactly as
+   * required ("synced off computer system time").
+   */
+  function partsForOffset(nowMs, offsetHours) {
+    var shifted = new Date(nowMs + offsetHours * 3600 * 1000);
+    return {
+      weekday: WEEKDAYS[shifted.getUTCDay()],
+      day: shifted.getUTCDate(),
+      month: MONTHS[shifted.getUTCMonth()],
+      year: shifted.getUTCFullYear(),
+      h: shifted.getUTCHours(),
+      m: shifted.getUTCMinutes(),
+      s: shifted.getUTCSeconds()
+    };
+  }
+
+  function tick() {
+    var nowMs = Date.now();
+
+    // Master date/time readout in the header — always shows this
+    // device's own local system time as the "source of truth" line.
+    var localNow = new Date(nowMs);
+    masterDateEl.textContent =
+      WEEKDAYS[localNow.getDay()] + " " + localNow.getDate() + " " +
+      MONTHS[localNow.getMonth()] + " " + localNow.getFullYear() +
+      " · device system time";
+
+    config.forEach(function (clockConfig, index) {
+      var p = partsForOffset(nowMs, clockConfig.offset);
+      var refs = cardRefs[index];
+
+      refs.hms.innerHTML =
+        pad(p.h) + ":" + pad(p.m) + ':<span class="secs">' + pad(p.s) + "</span>";
+
+      refs.tz.textContent = "UTC" + formatOffsetForInput(clockConfig.offset);
+
+      refs.dateEl.textContent = p.weekday + " " + p.day + " " + p.month + " " + p.year;
+
+      // Keep the offset input in sync if it isn't currently focused,
+      // so external programmatic changes (none currently, but future
+      // -proof) would still be reflected without clobbering typing.
+      if (document.activeElement !== refs.offsetInput) {
+        refs.offsetInput.value = formatOffsetForInput(clockConfig.offset);
+      }
+    });
+  }
+
+  tick();
+  setInterval(tick, 1000);
+
+  /* ---------- Auto-hide the edit controls when idle ---------- */
+  var idleTimer = null;
+  function resetIdle() {
+    document.body.classList.remove("idle");
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(function () {
+      document.body.classList.add("idle");
+    }, 8000);
+  }
+  ["mousemove", "mousedown", "keydown", "touchstart"].forEach(function (evt) {
+    window.addEventListener(evt, resetIdle, { passive: true });
+  });
+  resetIdle();
+
+})();
+</script>
+</body>
+</html>
